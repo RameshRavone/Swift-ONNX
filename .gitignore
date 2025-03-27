@@ -1,0 +1,17 @@
+Makefile
+
+*.Backup
+.build/
+
+libs/
+Sources/FrogUI/Renderer/Shaders/
+assets/SCF.*
+
+*.swp
+test*
+
+*.png
+*.jpg
+*.memory
+
+Sources/FrogUI/promises.swift
