@@ -9,7 +9,6 @@ typealias ORT_API = UnsafePointer<OrtApi>?
 
 public enum OrtError: Error {
     case Status(String)
-    case OutputParsingError
 }
 
 @frozen
@@ -139,27 +138,26 @@ public struct ONNX {
 
     public func Run(
         withInputs inputs: [String: OpaquePointer?],
-        outputNames: [String]?,
-        outputCount: Int
-    ) throws(OrtError) -> OpaquePointer? {
-        assert(!inputs.isEmpty)
+        outputNames: [String]
+    ) throws(OrtError) -> [String: OpaquePointer?] {
+        assert(!inputs.isEmpty && !outputNames.isEmpty)
 
         var status: OrtStatusPtr?
-        var outputTensor: OpaquePointer?
+        var outputTensors: [OpaquePointer?] = Array(repeating: nil, count: outputNames.count)
 
         let inputNames = Array(inputs.keys)
         let inputTensors = Array(inputs.values)
-        withArrayOfCStrings(inputNames) { inputNames in
-            withArrayOfCStrings(outputNames ?? ["output"]) { outNames in
+        withArrayOfCStrings(inputNames) { inNames in
+            withArrayOfCStrings(outputNames) { outNames in
                 status = self.api.pointee.Run(
                     self.session,
                     nil,
-                    inputNames,
+                    inNames,
                     inputTensors,
-                    inputs.count,
+                    inputNames.count,
                     outNames,
-                    outputNames?.count ?? 1,
-                    &outputTensor
+                    outputNames.count,
+                    &outputTensors
                 )
             }
         }
@@ -170,7 +168,12 @@ public struct ONNX {
             throw .Status("Failed to Run \(message)")
         }
 
-        return outputTensor
+        var result: [String: OpaquePointer?] = [:]
+        for i in 0 ..< outputNames.count {
+            result[outputNames[i]] = outputTensors[i]
+        }
+
+        return result
     }
 
     public func GetData(
