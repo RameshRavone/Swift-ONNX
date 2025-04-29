@@ -58,25 +58,41 @@ public struct ONNX {
 
         usingGPU = gpu
 
+        var status: OrtStatusPtr?
         var sessionOptions: OpaquePointer?
         if usingGPU {
-            _ = api.pointee.CreateSessionOptions(&sessionOptions)
+            status = api.pointee.CreateSessionOptions(&sessionOptions)
+
+            if let status {
+                let message = String(cString: api.pointee.GetErrorMessage(status)!)
+                throw .Status("Cannot Create Session: \(message)")
+            }
+
+            guard sessionOptions != nil else {
+                throw .Status("SessionOptions is nil")
+            }
 
             var o = OrtCUDAProviderOptions()
-            o.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchExhaustive
-            o.gpu_mem_limit = Int(SIZE_MAX)
+            o.cudnn_conv_algo_search = OrtCudnnConvAlgoSearchDefault
+            o.gpu_mem_limit = 1024 * 1024 * 1024
+            o.tunable_op_enable = 0
+            o.tunable_op_tuning_enable = 0
+            // o.use_legacy_conv_add_activation = 1
 
-            if let cudaStatus: OrtStatusPtr = api.pointee.SessionOptionsAppendExecutionProvider_CUDA(
+            status = api.pointee.SessionOptionsAppendExecutionProvider_CUDA(
                 sessionOptions,
                 &o
-            ) {
-                let message = String(cString: api.pointee.GetErrorMessage(cudaStatus)!)
-                api.pointee.ReleaseStatus(cudaStatus)
+            )
+
+            if let status {
+                let message = String(cString: api.pointee.GetErrorMessage(status)!)
+                api.pointee.ReleaseStatus(status)
                 throw .Status("Cannot Enable CUDA \(message)")
             }
         }
 
-        if let status: OrtStatusPtr = api.pointee.CreateSession(env, path, sessionOptions, &session) {
+        status = api.pointee.CreateSession(env, path, sessionOptions, &session)
+        if let status {
             let message = String(cString: api.pointee.GetErrorMessage(status)!)
 
             api.pointee.ReleaseEnv(env)
@@ -84,6 +100,11 @@ public struct ONNX {
             throw .Status("Cannot load model: \(message)")
         }
         assert(session != nil)
+
+        if let sessionOptions {
+            _ = api.pointee.DisableMemPattern(sessionOptions)
+            _ = api.pointee.SetSessionGraphOptimizationLevel(sessionOptions, ORT_DISABLE_ALL)
+        }
     }
 
     public func CreateInput(data: [Float32], shape: [Int64]) throws(OrtError) -> OpaquePointer? {
