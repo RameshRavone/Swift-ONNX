@@ -11,15 +11,12 @@ let package: Package = .init(
     ],
     dependencies: [],
     targets: [
-        .systemLibrary(name: "CONNX"),
+        .systemLibrary(name: "CONNX", pkgConfig: "onnxruntime", providers: []),
 
         .target(
             name: "ONNXRuntime",
             dependencies: [
                 "CONNX"
-            ],
-            linkerSettings: [
-                .unsafeFlags(["-L/home/rameshravone/Works/Libs/onnxruntime/lib"])
             ]
         )
     ]

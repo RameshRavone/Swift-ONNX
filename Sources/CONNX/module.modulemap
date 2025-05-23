@@ -1,5 +1,4 @@
 module CONNX [system][extern_c] {
     umbrella header "shims.h"
-    link "onnxruntime"
     export *                                                                                          
 }  

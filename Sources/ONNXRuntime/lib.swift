@@ -27,25 +27,28 @@ public struct ONNX {
         api = OrtGetApiBase()!.pointee.GetApi(UInt32(ORT_API_VERSION))!
     }
 
-    public func Release(value: OpaquePointer?) {
-        assert(value != nil, "Value is a nil")
-        api.pointee.ReleaseValue(value)
+    public mutating func Release(tensor: OrtTensor) {
+        assert(tensor.isValid)
+        api.pointee.ReleaseValue(tensor.ptr)
     }
 
-    public func Release() {
+    public mutating func Release() {
         if usingGPU, let sessionOptions {
             api.pointee.ReleaseSessionOptions(sessionOptions)
+            self.sessionOptions = nil
         }
         if let session {
             api.pointee.ReleaseSession(session)
+            self.session = nil
         }
         if let env {
             api.pointee.ReleaseEnv(env)
+            self.env = nil
         }
     }
 
     public mutating func CreateEnv(name: String = "ONNX_BASE") throws(OrtError) {
-        if let status: OrtStatusPtr = api.pointee.CreateEnv(ORT_LOGGING_LEVEL_WARNING, name, &env) {
+        if let status: OrtStatusPtr = api.pointee.CreateEnv(ORT_LOGGING_LEVEL_FATAL, name, &env) {
             api.pointee.ReleaseStatus(status)
             let message = String(cString: api.pointee.GetErrorMessage(status)!)
             throw .Status("Cannot create Environment \(message)")
@@ -107,7 +110,11 @@ public struct ONNX {
         }
     }
 
-    public func CreateInput(data: [Float32], shape: [Int64]) throws(OrtError) -> OpaquePointer? {
+    public func CreateInput(
+        name: String,
+        data: UnsafeMutableRawPointer,
+        shape: [Int64]
+    ) throws(OrtError) -> OrtTensor {
         assert(env != nil && session != nil)
 
         var status: OrtStatusPtr?
@@ -136,11 +143,11 @@ public struct ONNX {
             throw .Status("Cannot Create MemoryInfo \(message)")
         }
 
-        var data = data
+        let size = Int(shape[0] * shape[1] * (shape[2] * shape[3]))
         status = api.pointee.CreateTensorWithDataAsOrtValue(
             memoryInfo,
-            &data,
-            data.count * MemoryLayout<Float32>.size,
+            data,
+            size * MemoryLayout<Float>.size,
             shape,
             shape.count,
             ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
@@ -154,20 +161,22 @@ public struct ONNX {
         }
         api.pointee.ReleaseMemoryInfo(memoryInfo)
 
-        return inputTensor
+        return OrtTensor(name: name, ptr: inputTensor)
     }
 
     public func Run(
-        withInputs inputs: [String: OpaquePointer?],
+        withInputs inputs: [OrtTensor],
         outputNames: [String]
-    ) throws(OrtError) -> [String: OpaquePointer?] {
+    ) throws(OrtError) -> [String: OrtTensor] {
+        assert(isValid)
         assert(!inputs.isEmpty && !outputNames.isEmpty)
 
         var status: OrtStatusPtr?
         var outputTensors: [OpaquePointer?] = Array(repeating: nil, count: outputNames.count)
 
-        let inputNames = Array(inputs.keys)
-        let inputTensors = Array(inputs.values)
+        let inputNames = inputs.map { $0.name }
+        let inputTensors = inputs.map { $0.ptr }
+
         withArrayOfCStrings(inputNames) { inNames in
             withArrayOfCStrings(outputNames) { outNames in
                 status = self.api.pointee.Run(
@@ -189,24 +198,68 @@ public struct ONNX {
             throw .Status("Failed to Run \(message)")
         }
 
-        var result: [String: OpaquePointer?] = [:]
-        for i in 0 ..< outputNames.count {
-            result[outputNames[i]] = outputTensors[i]
+        var result: [String: OrtTensor] = [:]
+        for (i, name) in outputNames.enumerated() {
+            guard let tensor = outputTensors[i] else { continue }
+
+            var info: OpaquePointer?
+            status = api.pointee.GetTensorMemoryInfo(tensor, &info)
+
+            if let status {
+                let message = String(cString: api.pointee.GetErrorMessage(status)!)
+                api.pointee.ReleaseStatus(status)
+                throw .Status("Failed to Get MemoryInfo \(message)")
+            }
+
+            result[name] = OrtTensor(name: name, ptr: tensor)
         }
 
         return result
     }
 
-    public func GetData(
-        from tensor: OpaquePointer?,
-        into pointer: inout UnsafeMutableRawPointer?
+    public func GetData<DataType: Numeric>(
+        from tensor: OrtTensor,
+        into data: inout [DataType],
+        size: Int
     ) throws(OrtError) {
-        assert(tensor != nil)
-        if let status = api.pointee.GetTensorMutableData(tensor, &pointer) {
+        assert(tensor.isValid)
+        var status: OrtStatusPtr?
+
+        var info: OpaquePointer?
+        status = api.pointee.GetTensorTypeAndShape(tensor.ptr, &info)
+        if let status {
+            let message = String(cString: api.pointee.GetErrorMessage(status)!)
+            api.pointee.ReleaseStatus(status)
+            throw .Status("Failed to get tensor type and shape info \(message)")
+        }
+
+        var count = 0
+        status = api.pointee.GetTensorShapeElementCount(info, &count)
+        if let status {
+            let message = String(cString: api.pointee.GetErrorMessage(status)!)
+            api.pointee.ReleaseStatus(status)
+            throw .Status("Failed to get tensor element count \(message)")
+        }
+        assert(count == size)
+
+        var pointer: UnsafeMutableRawPointer?
+        status = api.pointee.GetTensorMutableData(tensor.ptr, &pointer)
+
+        if let status {
             let message = String(cString: api.pointee.GetErrorMessage(status)!)
             api.pointee.ReleaseStatus(status)
             throw .Status("Failed to get date from tensor \(message)")
         }
+        assert(pointer != nil)
+
+        var out: [DataType] = Array(repeating: 0, count: size)
+        if let dataPtr = pointer?.assumingMemoryBound(to: DataType.self) {
+            out = Array(UnsafeBufferPointer(start: dataPtr, count: size))
+        } else {
+            throw .Status("Failed to convert data type")
+        }
+
+        data = out
     }
 }
 
@@ -233,7 +286,7 @@ func withArrayOfCStrings<R>(
             to: CChar.self, capacity: argsBuffer.count
         )
         var cStrings: [UnsafePointer<CChar>?] = argsOffsets.map { ptr + $0 }
-        cStrings[cStrings.count - 1] = nil
+        cStrings.append(nil)
         return body(cStrings)
     }
 }
