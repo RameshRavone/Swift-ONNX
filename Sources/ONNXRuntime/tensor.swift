@@ -13,46 +13,43 @@ public struct OrtTensor {
         ptr != nil
     }
 
+    func checkStatus(api: UnsafePointer<OrtApi>, _ status: OrtStatusPtr?, _ message: String = "") throws {
+        if let status {
+            let msg = String(cString: api.pointee.GetErrorMessage(status)!)
+            api.pointee.ReleaseStatus(status)
+            throw message + "::" + msg
+        }
+    }
+
     public func GetData<DataType: Numeric>(
         api: UnsafePointer<OrtApi>,
         into data: inout [DataType],
         size: Int
-    ) throws(OrtError) {
+    ) throws {
         assert(isValid)
         var status: OrtStatusPtr?
 
         var info: OpaquePointer?
         status = api.pointee.GetTensorTypeAndShape(ptr, &info)
-        if let status {
-            let message = String(cString: api.pointee.GetErrorMessage(status)!)
-            api.pointee.ReleaseStatus(status)
-            throw .Status("Failed to get tensor type and shape info \(message)")
-        }
+        try checkStatus(api: api, status, "Failed to get tensor type and shape info")
 
         var count = 0
         status = api.pointee.GetTensorShapeElementCount(info, &count)
-        if let status {
-            let message = String(cString: api.pointee.GetErrorMessage(status)!)
-            api.pointee.ReleaseStatus(status)
-            throw .Status("Failed to get tensor element count \(message)")
-        }
+        try checkStatus(api: api, status, "Failed to get element count")
+
         assert(count == size)
 
         var pointer: UnsafeMutableRawPointer?
         status = api.pointee.GetTensorMutableData(ptr, &pointer)
+        try checkStatus(api: api, status, "Failed to get data from tensor")
 
-        if let status {
-            let message = String(cString: api.pointee.GetErrorMessage(status)!)
-            api.pointee.ReleaseStatus(status)
-            throw .Status("Failed to get date from tensor \(message)")
-        }
         assert(pointer != nil)
 
         var out: [DataType] = Array(repeating: 0, count: size)
         if let dataPtr = pointer?.assumingMemoryBound(to: DataType.self) {
             out = Array(UnsafeBufferPointer(start: dataPtr, count: size))
         } else {
-            throw .Status("Failed to convert data type")
+            throw "Failed to convert data type"
         }
 
         data = out
